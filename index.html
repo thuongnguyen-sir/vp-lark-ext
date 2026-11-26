@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VP Nhập một lần</title>
+<style>
+body{font:13px system-ui,sans-serif;margin:8px;color:#1f2329;background:#fff}
+textarea{width:100%;box-sizing:border-box;height:150px;font:12px monospace}
+button{margin:4px 4px 4px 0;padding:4px 10px}button:disabled{opacity:.45}
+pre{white-space:pre-wrap;background:#f5f6f7;padding:6px;max-height:420px;overflow:auto;font-size:12px}
+.ok{color:#1a7f37}.err{color:#c62828}
+</style></head><body>
+<b>VP-IMPORT 0.2</b> · <span id="base">đang kết nối…</span>
+<textarea id="pkg" placeholder="Dán gói JSON (xem sổ tay mục VP-IMPORT)"></textarea>
+<button id="dry">1. Kiểm (không ghi)</button><button id="run" disabled>2. Ghi</button>
+<button id="bk" disabled>Tải sao lưu lần ghi</button><button id="undo" disabled>Khôi phục lần ghi gần nhất</button>
+<pre id="log"></pre>
+<script type="module">
+import { bitable } from 'https://cdn.jsdelivr.net/npm/@lark-base-open/js-sdk@0.3.8/+esm';
+const $=id=>document.getElementById(id); const L=[]; const log=(s,c)=>{L.push(s); const d=document.createElement('div'); d.textContent=s; if(c) d.className=c; $('log').appendChild(d)};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// ===== Cấu trúc (theo sổ tay Vạn Phát) =====
+const T={von:'Giá vốn Kế toán', gia:'Giá theo SKU + kênh', master:'Master SKU', dongbo:'Master SKU (đồng bộ)'};
+const LINK='SKU Master'; // trường liên kết tới bảng đồng bộ (Base riêng)
+const F={sku:'SKU', khoa:'Khóa SKU | Kênh', kenh:'Kênh',
+  von:'Giá vốn có VAT (₫)', vatVao:'VAT đầu vào (%)', khauTru:'VAT đầu vào được khấu trừ', ngay:'Ngày áp dụng', ttVon:'Trạng thái giá vốn', ghiChu:'Người cấp | ghi chú',
+  nhom:'Nhóm giao/lắp', vatRa:'VAT đầu ra riêng SKU (%)',
+  giaUp:'Giá up làm tròn nghìn (₫)', ktts:'Kiểm tra tham số', ttGia:'Trạng thái giá',
+  duyet:'Giá đã duyệt (₫)', ttDuyet:'Trạng thái duyệt giá', ngayDuyet:'Ngày duyệt', nguoiDuyet:'Người duyệt'};
+const TT_GIA_OK=['PASS','ĐẠT LN gộp – LN ròng chờ tham số kênh'];
+
+// ===== Đọc/ghi giá trị theo kiểu trường SDK =====
+const TY={TEXT:1,NUM:2,SEL:3,MSEL:4,DATE:5,CHK:7,URL:15,LINK:18,LOOKUP:19,FORMULA:20,DLINK:21};
+const flat=v=>v==null?'':Array.isArray(v)?v.map(x=>x==null?'':typeof x==='object'?(x.text??x.name??''):String(x)).join(''):typeof v==='object'?(v.text??v.name??''):String(v);
+function readVal(meta,v){ // chuẩn hóa giá trị ô để so sánh
+  if(v==null) return null;
+  if(meta.type===TY.NUM) return typeof v==='number'?v:null;
+  if(meta.type===TY.DATE) return typeof v==='number'?v:null;
+  if(meta.type===TY.CHK) return !!v;
+  if(meta.type===TY.LINK||meta.type===TY.DLINK) return (v.recordIds||[]).join(',');
+  if(meta.type===TY.FORMULA){ if(typeof v==='number') return v; if(Array.isArray(v)&&v.length===1&&typeof v[0]==='number') return v[0]; return flat(v) }
+  return flat(v).trim();
+}
+function num(meta,v){ const x=readVal(meta,v); return typeof x==='number'&&isFinite(x)?x:null } // không bóc ký tự
+function toCell(meta,val){ // giá trị gói → ô Lark; lỗi kiểu thì ném lỗi
+  const n=meta.name;
+  if(val===null) return null;
+  switch(meta.type){
+    case TY.TEXT: case TY.URL: return [{type:'text',text:String(val)}];
+    case TY.NUM: if(typeof val!=='number'||!isFinite(val)) throw `"${n}" cần số, nhận ${JSON.stringify(val)}`; return val;
+    case TY.DATE: { const t=typeof val==='number'?val:/^\d{2}\/\d{2}\/\d{4}$/.test(val)?Date.UTC(+val.slice(6),+val.slice(3,5)-1,+val.slice(0,2))-7*3600e3:NaN; if(!isFinite(t)) throw `"${n}" cần ngày dd/mm/yyyy`; return t }
+    case TY.SEL: { const o=(meta.property.options||[]).find(o=>o.name===val); if(!o) throw `"${val}" không có trong lựa chọn của "${n}"`; return {id:o.id,text:o.name} }
+    case TY.CHK: return !!val;
+    case TY.LINK: case TY.DLINK: return {recordIds:[].concat(val),tableId:meta.property.tableId,type:'text',text:''};
+    default: throw `Không ghi được trường "${n}" (kiểu ${meta.type} – công thức/tra cứu chỉ đọc)`;
+  }
+}
+const same=(meta,cur,val)=>{ const a=readVal(meta,cur); if(meta.type===TY.DATE&&typeof val==='string') val=toCell(meta,val); if(meta.type===TY.LINK||meta.type===TY.DLINK) return a===[].concat(val).join(','); return (a??'')===(val??'') || (typeof a==='number'&&a===val) };
+
+// ===== Bảng =====
+const cache={};
+async function tbl(name){ if(cache[name]) return cache[name];
+  const list=await bitable.base.getTableMetaList(); const m=list.find(x=>x.name===name); if(!m) return null; // không có trong Base này
+  const tb=await bitable.base.getTableById(m.id); const metas=await tb.getFieldMetaList(); const by={}, byId={}; metas.forEach(x=>{by[x.name]=x;byId[x.id]=x});
+  const rows=[]; let pageToken; do{ const r=await tb.getRecords({pageSize:1000,pageToken}); rows.push(...r.records); pageToken=r.hasMore?r.pageToken:undefined }while(pageToken);
+  return cache[name]={name,id:m.id,tb,by,byId,rows,rec:new Map(rows.map(r=>[r.recordId,r]))};
+}
+const need=(t,n)=>{ const m=t.by[n]; if(!m) throw `Bảng "${t.name}" thiếu trường "${n}"`; return m };
+const get=(t,r,n)=>readVal(need(t,n),r.fields[need(t,n).id]);
+function idx(t,n){ const m=new Map(); for(const r of t.rows){ const k=String(get(t,r,n)??'').trim(); if(!k) continue; if(!m.has(k)) m.set(k,[]); m.get(k).push(r) } return m }
+function pick(t,keyField,key,recordId){ // ưu tiên ID bản ghi; khóa trùng → chặn
+  if(recordId){ const r=t.rec.get(recordId); if(!r) return {err:`ID bản ghi ${recordId} không có trong "${t.name}"`};
+    if(key!=null&&String(get(t,r,keyField)??'').trim()!==key) return {err:`ID ${recordId} không khớp ${keyField}=${key}`}; return {r} }
+  const hit=idx(t,keyField).get(key)||[]; if(hit.length>1) return {err:`TRÙNG ${keyField}=${key} (${hit.length} bản ghi) – chặn mã này`};
+  return {r:hit[0]||null};
+}
+
+// ===== Lập kế hoạch =====
+// mỗi việc: {ma, bang, recordId|null(tạo), fields:{tên:giá trị}, cu:{tên:giá trị cũ}, dieuKien?}
+async function lapKeHoach(P){
+  for(const k of Object.values(cache)) delete cache[k.name];
+  const KH=[], LOI=[], KHAC=[], DUNG=[];
+  const fail=(ma,e)=>LOI.push(ma+': '+e);
+  const datViec=(ma,t,r,set,them)=>{ // so sánh, chỉ giữ trường khác
+    const fields={}, cu={};
+    for(const [n,v] of Object.entries(set)){ if(v===undefined) continue; const m=need(t,n); toCell(m,v); // kiểm kiểu trước
+      if(r&&same(m,r.fields[m.id],v)) continue; fields[n]=v; cu[n]=r?readVal(m,r.fields[m.id]):null }
+    if(!r){ for(const [n,v] of Object.entries(them||{})){ const m=need(t,n); toCell(m,v); fields[n]=v } KH.push({ma,bang:t.name,recordId:null,fields,cu:{}}); return }
+    if(Object.keys(fields).length) KH.push({ma,bang:t.name,recordId:r.recordId,fields,cu}); else DUNG.push(ma);
+  };
+  // A. ghi chung theo bảng (di chuyển dữ liệu, cập nhật Master…)
+  for(const g of P.ghi||[]){ const ma=`${g.bang}:${g.record_id||JSON.stringify(g.khoa)}`;
+    try{ const t=await tbl(g.bang); if(!t){KHAC.push(ma);continue}
+      const [kf,kv]=Object.entries(g.khoa||{})[0]||[]; const {r,err}=pick(t,kf,kv,g.record_id); if(err){fail(ma,err);continue}
+      if(!r&&!g.tao_moi){fail(ma,'không có bản ghi (không tự tạo)');continue}
+      let set=g.dat; if(g.chi_khi_trong&&r){ set={}; for(const [n,v] of Object.entries(g.dat)){ const x=get(t,r,n); if(x===null||x==='') set[n]=v; else if(!same(need(t,n),r.fields[need(t,n).id],v)) fail(ma,`"${n}" đã có giá trị khác (${x}) – giữ nguyên`) } }
+      datViec(ma,t,r,set,kf?{[kf]:kv}:{});
+    }catch(e){fail(ma,e)} }
+  // B. đổi SKU (xử lý đủ mọi bản ghi mang SKU cũ, giữ kênh)
+  for(const d of P.doi_sku||[]){ const ma=`ĐỔI ${d.cu}→${d.moi}`; let co=false;
+    try{ if(!d.cu||!d.moi||d.cu===d.moi) throw 'thiếu mã cũ/mới';
+      for(const name of [T.von,T.gia]){ const t=await tbl(name); if(!t) continue; co=true;
+        const ix=idx(t,F.sku); if(ix.has(d.moi)) { fail(ma,`"${name}" đã có SKU mới – chặn`); continue }
+        const rs=ix.get(d.cu)||[]; if(!rs.length){ DUNG.push(ma+' ('+name+': không có mã cũ)'); continue }
+        for(const r of rs){ const set={[F.sku]:d.moi};
+          if(t.by[F.khoa]){ const kenh=String(get(t,r,F.kenh)||'').trim(); if(!kenh){fail(ma,`bản ghi ${r.recordId} thiếu Kênh – không tự gán`);continue} set[F.khoa]=d.moi+' | '+kenh }
+          datViec(ma,t,r,set) } }
+      if(!co) KHAC.push(ma);
+    }catch(e){fail(ma,e)} }
+  // C. đồng bộ SKU theo liên kết Master (sau khi sửa SKU ở Master)
+  if(P.dong_bo_sku){ try{ const dm=await tbl(T.dongbo); if(!dm) throw `Base này không có bảng "${T.dongbo}"`;
+      const skuOf=new Map(dm.rows.map(r=>[r.recordId,String(get(dm,r,F.sku)||'').trim()]));
+      for(const name of [T.von,T.gia]){ const t=await tbl(name); if(!t) continue; const lk=need(t,LINK);
+        for(const r of t.rows){ const ids=(r.fields[lk.id]&&r.fields[lk.id].recordIds)||[]; if(ids.length!==1) continue;
+          const moi=skuOf.get(ids[0]); const cu=String(get(t,r,F.sku)||'').trim(); if(!moi||moi===cu) continue; const ma=`ĐỒNG BỘ ${cu}→${moi}`;
+          const set={[F.sku]:moi}; if(t.by[F.khoa]){ const kenh=String(get(t,r,F.kenh)||'').trim(); if(!kenh){fail(ma,'thiếu Kênh');continue} set[F.khoa]=moi+' | '+kenh }
+          datViec(ma,t,r,set) } }
+    }catch(e){fail('đồng bộ SKU',e)} }
+  // D. gắn liên kết Master cho dòng chưa có (theo SKU, chỉ khi khớp đúng 1 bản ghi)
+  if(P.gan_lien_ket){ try{ const dm=await tbl(T.dongbo); if(!dm) throw `Base này không có bảng "${T.dongbo}"`; const ix=idx(dm,F.sku);
+      for(const name of [T.von,T.gia]){ const t=await tbl(name); if(!t) continue; const lk=need(t,LINK);
+        for(const r of t.rows){ if(((r.fields[lk.id]||{}).recordIds||[]).length) continue; const s=String(get(t,r,F.sku)||'').trim(); const ma=`LIÊN KẾT ${name}:${s||r.recordId}`;
+          const h=ix.get(s)||[]; if(h.length!==1){ fail(ma,h.length?'Master trùng SKU':'không có trong Master'); continue }
+          datViec(ma,t,r,{[LINK]:h[0].recordId}) } }
+    }catch(e){fail('gắn liên kết',e)} }
+  // E. vốn (nhập một lần)
+  if((P.von||[]).length){ const t=await tbl(T.von); if(!t) P.von.forEach(i=>KHAC.push('VỐN '+i.sku)); else
+    for(const i of P.von){ const ma='VỐN '+i.sku; try{ const {r,err}=pick(t,F.sku,i.sku,i.record_id); if(err) throw err;
+      datViec(ma,t,r,{[F.von]:i.von,[F.vatVao]:i.vat,[F.khauTru]:i.khau_tru,[F.ngay]:i.ngay,[F.ttVon]:i.trang_thai,[F.ghiChu]:i.ghi_chu},{[F.sku]:i.sku}) }catch(e){fail(ma,e)} } }
+  // F. dòng giá: tham số đầu vào (giá duyệt xử lý sau khi ghi, đọc từ công thức)
+  if((P.gia||[]).length){ const t=await tbl(T.gia); if(!t) P.gia.forEach(i=>KHAC.push('GIÁ '+i.sku)); else
+    for(const i of P.gia){ const ma='GIÁ '+i.sku+' | '+i.kenh; try{ if(!i.kenh) throw 'thiếu Kênh – không mặc định';
+      const key=i.sku+' | '+i.kenh; const {r,err}=pick(t,F.khoa,key,i.record_id); if(err) throw err;
+      datViec(ma,t,r,{[F.nhom]:i.nhom,[F.vatRa]:i.vat_ra},{[F.khoa]:key,[F.sku]:i.sku,[F.kenh]:i.kenh}) }catch(e){fail(ma,e)} } }
+  return {KH,LOI,KHAC,DUNG};
+}
+
+// ===== Thực hiện =====
+let plan=null, planKey=null, busy=false, lastBk=null;
+const lock=v=>{busy=v; $('dry').disabled=v; $('run').disabled=v||!plan; $('undo').disabled=v||!lastBk; $('bk').disabled=v||!lastBk};
+function inKeHoach(k){
+  log(`KẾ HOẠCH: ${k.KH.length} bản ghi đổi · ${k.DUNG.length} đã đúng · ${k.LOI.length} lỗi (chặn) · ${k.KHAC.length} thuộc Base khác`);
+  k.KH.forEach(v=>log(`${v.recordId?'SỬA':'TẠO'} ${v.ma} [${v.bang}] `+Object.entries(v.fields).map(([n,x])=>`${n}: ${v.recordId?JSON.stringify(v.cu[n])+' → ':''}${JSON.stringify(x)}`).join(' ; ')));
+  k.DUNG.forEach(m=>log('ĐÚNG – bỏ qua: '+m,'ok')); k.LOI.forEach(m=>log('LỖI: '+m,'err')); k.KHAC.forEach(m=>log('CHƯA CHẠY – không thuộc Base này: '+m));
+}
+async function ghi(k){
+  const t0=Date.now(), kq={ok:[],loi:[]}; const bk=[];
+  for(const v of k.KH){ const t=cache[v.bang];
+    const fields={}; for(const [n,x] of Object.entries(v.fields)) fields[need(t,n).id]=toCell(need(t,n),x);
+    try{ if(v.recordId){ bk.push({bang:v.bang,recordId:v.recordId,cu:v.cu}); await t.tb.setRecord(v.recordId,{fields}) } else { v.recordId=await t.tb.addRecord({fields}); bk.push({bang:v.bang,recordId:v.recordId,tao:true}) } kq.ok.push(v) }
+    catch(e){ kq.loi.push(v.ma+': '+(e&&e.message||e)) } }
+  lastBk={luc:new Date().toISOString(),ds:bk}; try{localStorage.setItem('vpimp_last_bk',JSON.stringify(lastBk))}catch(e){}
+  // đọc lại 100% trường vừa ghi
+  let lech=0; for(const v of kq.ok){ const t=cache[v.bang]; const r=await t.tb.getRecordById(v.recordId);
+    for(const [n,x] of Object.entries(v.fields)){ if(!same(need(t,n),r.fields[need(t,n).id],x)){ lech++; kq.loi.push(`ĐỌC LẠI LỆCH ${v.ma} "${n}"`) } } }
+  log(`GHI: ${kq.ok.length} thành công · ${kq.loi.length} lỗi · đọc lại lệch ${lech} · ${((Date.now()-t0)/1000).toFixed(1)} giây`, kq.loi.length?'err':'ok');
+  kq.loi.forEach(m=>log('LỖI: '+m,'err')); return kq;
+}
+async function duyetGia(P){ // sau khi ghi đầu vào: chờ công thức, kiểm trạng thái, ghi giá duyệt từ công thức
+  const ds=(P.gia||[]).filter(i=>i.duyet); if(!ds.length) return; delete cache[T.gia]; let t=await tbl(T.gia); if(!t) return;
+  const m={giaUp:need(t,F.giaUp),ktts:need(t,F.ktts),tt:need(t,F.ttGia)};
+  for(const i of ds){ const ma='DUYỆT '+i.sku+' | '+i.kenh; const {r,err}=pick(t,F.khoa,i.sku+' | '+i.kenh,i.record_id); if(err||!r){log('LỖI: '+ma+': '+(err||'chưa có dòng'),'err');continue}
+    let rec, g=null, kt='', tt='', t0=Date.now();
+    while(Date.now()-t0<30000){ rec=await t.tb.getRecordById(r.recordId); kt=readVal(m.ktts,rec.fields[m.ktts.id]); tt=readVal(m.tt,rec.fields[m.tt.id]); g=num(m.giaUp,rec.fields[m.giaUp.id]); if(kt==='Đủ'&&g) break; await sleep(1000) }
+    if(kt!=='Đủ'){ log(`LỖI: ${ma}: Kiểm tra tham số = "${kt}" – không duyệt`,'err'); continue }
+    if(!TT_GIA_OK.includes(tt)){ log(`LỖI: ${ma}: Trạng thái giá = "${tt}" – không duyệt`,'err'); continue }
+    if(!g){ log(`LỖI: ${ma}: công thức chưa trả số`,'err'); continue }
+    if(i.gia_ky_vong&&i.gia_ky_vong!==g){ log(`LỖI: ${ma}: giá công thức ${g} ≠ kỳ vọng ${i.gia_ky_vong} – không duyệt`,'err'); continue }
+    const k2={KH:[],LOI:[],KHAC:[],DUNG:[]}; const set={[F.duyet]:g,[F.ttDuyet]:i.trang_thai_duyet||'Đã duyệt',[F.ngayDuyet]:i.ngay_duyet,[F.nguoiDuyet]:i.nguoi_duyet};
+    const fields={}, cu={}; for(const [n,v] of Object.entries(set)){ if(v===undefined) continue; const mm=need(t,n); if(same(mm,rec.fields[mm.id],v)) continue; fields[n]=v; cu[n]=readVal(mm,rec.fields[mm.id]) }
+    if(!Object.keys(fields).length){ log('ĐÚNG – bỏ qua: '+ma+' = '+g,'ok'); continue }
+    log(`GIÁ LARK ${ma} = ${g} (${tt})`); k2.KH.push({ma,bang:T.gia,recordId:r.recordId,fields,cu}); await ghi(k2) }
+}
+$('dry').onclick=async()=>{ if(busy) return; lock(true); $('log').textContent=''; plan=null;
+  try{ const txt=$('pkg').value; const P=JSON.parse(txt||'{}'); plan=await lapKeHoach(P); planKey=txt; inKeHoach(plan);
+       if(!plan.KH.length&&!(P.gia||[]).some(i=>i.duyet)) plan=null; }
+  catch(e){ log('LỖI: '+(e&&e.message||e),'err'); plan=null } lock(false) };
+$('run').onclick=async()=>{ if(busy||!plan) return; if($('pkg').value!==planKey){ log('Gói đã đổi sau khi Kiểm – bấm Kiểm lại','err'); return }
+  lock(true); const k=plan; plan=null; // khóa chống bấm hai lần
+  try{ const t0=Date.now(); await ghi(k); await duyetGia(JSON.parse(planKey)); log(`TỔNG THỜI GIAN ${((Date.now()-t0)/1000).toFixed(1)} giây`) }
+  catch(e){ log('LỖI: '+(e&&e.message||e),'err') } lock(false) };
+$('bk').onclick=()=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(lastBk,null,1)],{type:'application/json'})); a.download='vpimport-saoluu-'+lastBk.luc.slice(0,19).replace(/:/g,'')+'.json'; a.click() };
+$('undo').onclick=async()=>{ if(busy||!lastBk) return; lock(true); let n=0;
+  try{ for(const b of lastBk.ds){ if(b.tao){ log('Bản ghi mới tạo giữ nguyên (không xóa tự động): '+b.recordId); continue }
+      const t=cache[b.bang]||await tbl(b.bang); const fields={}; for(const [nm,x] of Object.entries(b.cu)) fields[need(t,nm).id]=x===null||x===''?null:toCell(need(t,nm),x);
+      await t.tb.setRecord(b.recordId,{fields}); n++ } log('Đã khôi phục '+n+' bản ghi','ok'); lastBk=null }
+  catch(e){ log('LỖI khôi phục: '+(e&&e.message||e),'err') } lock(false) };
+try{ lastBk=JSON.parse(localStorage.getItem('vpimp_last_bk')||'null') }catch(e){}
+(async()=>{ try{ const s=await bitable.base.getSelection(); const ts=await bitable.base.getTableMetaList();
+  const ed=await bitable.base.isEditable().catch(()=>null);
+  $('base').textContent=`Base ${s.baseId} · ${ts.length} bảng · ${ed===false?'CHỈ ĐỌC':'được sửa'}`; lock(false) }
+  catch(e){ $('base').textContent='Không chạy trong Lark: '+e; $('dry').disabled=true } })();
+</script></body></html>
