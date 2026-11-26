@@ -8,7 +8,7 @@ button{margin:4px 4px 4px 0;padding:4px 10px}button:disabled{opacity:.45}
 pre{white-space:pre-wrap;background:#f5f6f7;padding:6px;max-height:420px;overflow:auto;font-size:12px}
 .ok{color:#1a7f37}.err{color:#c62828}
 </style></head><body>
-<b>VP-IMPORT 0.7</b> · <span id="base">đang kết nối…</span>
+<b>VP-IMPORT 0.8</b> · <span id="base">đang kết nối…</span>
 <textarea id="pkg" placeholder="Dán gói JSON (xem sổ tay mục VP-IMPORT)"></textarea>
 <button id="dry">1. Kiểm (không ghi)</button><button id="run" disabled>2. Ghi</button>
 <button id="bk" disabled>Tải sao lưu lần ghi</button><button id="undo" disabled>Khôi phục lần ghi gần nhất</button>
@@ -157,7 +157,7 @@ async function duyetGia(P){ // sau khi ghi đầu vào: chờ công thức, ki�
       const vg=num(m.von,rec.fields[m.von.id]);
       dauVao=(!vonMoi.has(i.sku)||vg===vonMoi.get(i.sku)) && (i.nhom===undefined||readVal(m.nhom,rec.fields[m.nhom.id])===i.nhom) && (i.vat_ra===undefined||num(m.vatRa,rec.fields[m.vatRa.id])===i.vat_ra);
       const dau=[kt,tt,g,vg].join('|'); if(dauVao&&kt==='Đủ'&&g&&dau===truoc) break; truoc=dauVao?dau:null; await sleep(1000) }
-    if(!dauVao){ log(`LỖI: ${ma}: công thức chưa nhận đầu vào mới sau 45 giây – không duyệt`,'err'); continue }
+    if(!dauVao){ log(`LỖI: ${ma}: công thức chưa nhận đầu vào mới sau 45 giây – không duyệt (SDK: vốn dòng giá ${raw(rec.fields[m.von.id])}, giá up ${raw(rec.fields[m.giaUp.id])}, kiểm ${raw(rec.fields[m.ktts.id])})`,'err'); continue }
     if(kt!=='Đủ'){ log(`LỖI: ${ma}: Kiểm tra LN gộp = "${kt}" – không duyệt`,'err'); continue }
     if(!TT_GIA_OK.includes(tt)){ log(`LỖI: ${ma}: Trạng thái giá = "${tt}" – không duyệt`,'err'); continue }
     if(!g){ log(`LỖI: ${ma}: công thức chưa trả số – giá trị SDK: ${raw(rec.fields[m.giaUp.id])}`,'err'); continue }
