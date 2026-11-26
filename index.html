@@ -8,7 +8,7 @@ button{margin:4px 4px 4px 0;padding:4px 10px}button:disabled{opacity:.45}
 pre{white-space:pre-wrap;background:#f5f6f7;padding:6px;max-height:420px;overflow:auto;font-size:12px}
 .ok{color:#1a7f37}.err{color:#c62828}
 </style></head><body>
-<b>VP-IMPORT 0.4</b> · <span id="base">đang kết nối…</span>
+<b>VP-IMPORT 0.5</b> · <span id="base">đang kết nối…</span>
 <textarea id="pkg" placeholder="Dán gói JSON (xem sổ tay mục VP-IMPORT)"></textarea>
 <button id="dry">1. Kiểm (không ghi)</button><button id="run" disabled>2. Ghi</button>
 <button id="bk" disabled>Tải sao lưu lần ghi</button><button id="undo" disabled>Khôi phục lần ghi gần nhất</button>
@@ -39,7 +39,13 @@ function readVal(meta,v){ // chuẩn hóa giá trị ô để so sánh
   if(meta.type===TY.FORMULA){ if(typeof v==='number') return v; if(Array.isArray(v)&&v.length===1&&typeof v[0]==='number') return v[0]; return flat(v) }
   return flat(v).trim();
 }
-function num(meta,v){ const x=readVal(meta,v); return typeof x==='number'&&isFinite(x)?x:null } // không bóc ký tự
+function num(meta,v){ // đọc số theo kiểu SDK; chuỗi chỉ nhận khi là số nguyên vẹn (không bóc ký tự)
+  const ok=s=>typeof s==='string'&&/^-?\d+(\.\d+)?$/.test(s.trim())?Number(s.trim()):null;
+  if(typeof v==='number') return isFinite(v)?v:null;
+  if(Array.isArray(v)&&v.length===1){ const a=v[0]; if(typeof a==='number') return a; if(typeof a==='string') return ok(a); if(a&&typeof a==='object'){ if(typeof a.value==='number') return a.value; return ok(a.text) } }
+  if(v&&typeof v==='object'&&typeof v.value==='number') return v.value;
+  return ok(v) }
+const raw=v=>{ try{ return JSON.stringify(v).slice(0,160) }catch(e){ return String(v) } };
 function toCell(meta,val){ // giá trị gói → ô Lark; lỗi kiểu thì ném lỗi
   const n=meta.name;
   if(val===null) return null;
@@ -146,7 +152,7 @@ async function duyetGia(P){ // sau khi ghi đầu vào: chờ công thức, ki�
     while(Date.now()-t0<30000){ rec=await t.tb.getRecordById(r.recordId); kt=readVal(m.ktts,rec.fields[m.ktts.id]); tt=readVal(m.tt,rec.fields[m.tt.id]); g=num(m.giaUp,rec.fields[m.giaUp.id]); if(kt==='Đủ'&&g) break; await sleep(1000) }
     if(kt!=='Đủ'){ log(`LỖI: ${ma}: Kiểm tra LN gộp = "${kt}" – không duyệt`,'err'); continue }
     if(!TT_GIA_OK.includes(tt)){ log(`LỖI: ${ma}: Trạng thái giá = "${tt}" – không duyệt`,'err'); continue }
-    if(!g){ log(`LỖI: ${ma}: công thức chưa trả số`,'err'); continue }
+    if(!g){ log(`LỖI: ${ma}: công thức chưa trả số – giá trị SDK: ${raw(rec.fields[m.giaUp.id])}`,'err'); continue }
     if(i.gia_ky_vong&&i.gia_ky_vong!==g){ log(`LỖI: ${ma}: giá công thức ${g} ≠ kỳ vọng ${i.gia_ky_vong} – không duyệt`,'err'); continue }
     const set={[F.duyet]:g,[F.ttDuyet]:i.trang_thai_duyet||'Đã duyệt',[F.ngayDuyet]:i.ngay_duyet,[F.nguoiDuyet]:i.nguoi_duyet};
     const fields={}, cu={}; for(const [n,v] of Object.entries(set)){ if(v===undefined) continue; const mm=need(t,n); if(same(mm,rec.fields[mm.id],v)) continue; fields[n]=v; cu[n]=readVal(mm,rec.fields[mm.id]) }
