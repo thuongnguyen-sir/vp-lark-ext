@@ -8,7 +8,7 @@ button{margin:4px 4px 4px 0;padding:4px 10px}button:disabled{opacity:.45}
 pre{white-space:pre-wrap;background:#f5f6f7;padding:6px;max-height:420px;overflow:auto;font-size:12px}
 .ok{color:#1a7f37}.err{color:#c62828}
 </style></head><body>
-<b>VP-IMPORT 1.0</b> · <span id="base">đang kết nối…</span>
+<b>VP-IMPORT 1.1</b> · <span id="base">đang kết nối…</span>
 <textarea id="pkg" placeholder="Dán gói JSON (xem sổ tay mục 0.10)"></textarea>
 <button id="dry">1. Kiểm (không ghi)</button><button id="run" disabled>2. Ghi</button>
 <button id="bk" disabled>Tải nhật ký giao dịch</button><button id="undo" disabled>Khôi phục giao dịch gần nhất (2 Base)</button>
@@ -93,6 +93,8 @@ async function lapKeHoach(P){
   const dat=(ma,sku,t,id,set)=>{ const k=key(t,id); let job=KH.get(k);
     const r=String(id).startsWith('moi:')?null:t.rec.get(id);
     for(const [n,v] of Object.entries(set)){ if(v===undefined) continue; const m=need(t,n); toCell(m,v);
+      if(job&&n in job.fields&&norm(m,job.fields[n])!==norm(m,v)) throw `TRÙNG TRONG GÓI: "${n}" của ${job.ma[0]} bị đặt hai giá trị (${JSON.stringify(job.fields[n])} / ${JSON.stringify(v)})` }
+    for(const [n,v] of Object.entries(set)){ if(v===undefined) continue; const m=need(t,n);
       if(job&&n in job.fields){ if(norm(m,job.fields[n])!==norm(m,v)) throw `TRÙNG TRONG GÓI: "${n}" của ${job.ma[0]} bị đặt hai giá trị (${JSON.stringify(job.fields[n])} / ${JSON.stringify(v)})`; continue }
       if(r&&same(m,r.fields[m.id],v)) continue;
       if(!job){ job={ma:[],sku:new Set(),bang:t.name,recordId:r?id:null,vid:r?null:id,fields:{},cu:{}}; KH.set(k,job) }
@@ -139,7 +141,8 @@ async function lapKeHoach(P){
     for(const i of P.gia){ const ma='GIÁ '+i.sku+' | '+i.kenh; try{ if(!i.kenh) throw 'thiếu Kênh – không mặc định';
       const k=i.sku+' | '+i.kenh; const set={[F.nhom]:i.nhom,[F.vatRa]:i.vat_ra};
       const id=pick(t,F.khoa,k,i.record_id); if(id) dat(ma,i.sku,t,id,set); else taoMoi(ma,i.sku,t,{...set,[F.khoa]:k,[F.sku]:i.sku,[F.kenh]:i.kenh}) }catch(e){ fail(ma,e,i.sku) } } }
-  return {KH:[...KH.values()].map(k=>({...k,sku:[...k.sku]})),LOI,KHAC,DUNG,SKU_LOI};
+  const out=[]; for(const k of KH.values()){ const bad=[...k.sku].filter(x=>SKU_LOI.has(x)); if(bad.length){ LOI.push(`BỎ GHI [${k.bang}] ${k.recordId||'(mới)'}: SKU ${bad.join(',')} có lỗi trong gói`); continue } out.push({...k,sku:[...k.sku]}) }
+  return {KH:out,LOI,KHAC,DUNG,SKU_LOI};
 }
 
 // ===== Nhật ký giao dịch (mỗi Base lưu phần của mình) =====
@@ -219,7 +222,7 @@ let VAI='', BASE='', HAS={}, busy=false, plan=null, planKey=null, peer=null, txC
 const ch=new BroadcastChannel('vpimp-v1'); const cho=new Map();
 const BASE_KIA=()=>BASE===BASES.rieng?BASES.chung:BASES.rieng;
 function goi(msg,ms){ return new Promise(res=>{ const id=rid(); const to=setTimeout(()=>{cho.delete(id);res(null)},ms); cho.set(id,v=>{clearTimeout(to);cho.delete(id);res(v)}); ch.postMessage({...msg,id,tu:BASE,den:BASE_KIA()}) }) }
-const lock=v=>{busy=v; $('dry').disabled=v; $('run').disabled=v||!plan; $('undo').disabled=v||!lastTx; $('bk').disabled=v||!lastTx};
+const lock=v=>{busy=v; $('dry').disabled=v; $('run').disabled=v||!plan; $('undo').disabled=v; $('bk').disabled=v||!lastTx};
 const hashKH=KH=>hash(JSON.stringify(KH.map(k=>[k.bang,k.recordId||k.vid,k.fields])));
 function inKeHoach(k,tien){
   log(`${tien}KẾ HOẠCH: ${k.KH.length} bản ghi đổi · ${k.DUNG.length} đã đúng · ${k.LOI.length} lỗi · ${k.KHAC.length} thuộc Base khác`);
@@ -282,9 +285,10 @@ $('run').onclick=async()=>{ if(busy||!plan) return; if($('pkg').value!==planKey)
     else if((P.gia||[]).some(i=>i.duyet)){ const d=await duyetGia(P,tx,skuCam); log(`DUYỆT: ${d.ok} đạt/đúng · ${d.tu} không duyệt`) }
   }catch(e){ thatBai=true; log('LỖI: '+(e&&e.message||e),'err') }
   if(thatBai) log(`GIAO DỊCH ${tx}: THẤT BẠI – đã ghi một phần (xem các dòng [Base…] ở trên). Bấm "Khôi phục giao dịch gần nhất" để trả cả hai Base về trước giao dịch.`,'err');
+  else if(k.LOI.length||(pp&&pp.LOI.length)) log(`GIAO DỊCH ${tx}: HOÀN TẤT MỘT PHẦN – phần hợp lệ đã ghi và đọc lại khớp; ${k.LOI.length+(pp?pp.LOI.length:0)} mục lỗi KHÔNG ghi (xem LỖI ở trên) · ${((Date.now()-t0)/1000).toFixed(1)} giây`,'err');
   else log(`GIAO DỊCH ${tx}: THÀNH CÔNG · ${((Date.now()-t0)/1000).toFixed(1)} giây`,'ok');
   lock(false) };
-$('undo').onclick=async()=>{ if(busy||!lastTx) return; lock(true); const tx=lastTx; const j=jLoad(tx);
+$('undo').onclick=async()=>{ if(busy) return; let tx=lastTx; try{ const P=JSON.parse($('pkg').value||'{}'); if(P.khoi_phuc) tx=P.khoi_phuc }catch(e){} if(!tx) return; lock(true); const j=jLoad(tx); log('Khôi phục giao dịch '+tx);
   try{ if(j&&j.peer){ const kq=await goi({loai:'khoiphuc',tx},300000); if(!kq||kq._tu!==BASE_KIA()) log('LỖI: Base kia không phản hồi khôi phục – mở tiện ích ở thẻ đó rồi bấm lại','err'); else log(`[Base kia] khôi phục: ${kq.n||0} bản ghi, xóa ${kq.xoa||0} bản ghi mới, lỗi ${(kq.loi||[]).length}`,(kq.loi||[]).length?'err':'ok') }
     await khoiPhuc(tx) }
   catch(e){ log('LỖI khôi phục: '+(e&&e.message||e),'err') } lock(false) };
