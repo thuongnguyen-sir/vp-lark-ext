@@ -8,7 +8,7 @@ button{margin:4px 4px 4px 0;padding:4px 10px}button:disabled{opacity:.45}
 pre{white-space:pre-wrap;background:#f5f6f7;padding:6px;max-height:420px;overflow:auto;font-size:12px}
 .ok{color:#1a7f37}.err{color:#c62828}
 </style></head><body>
-<b>VP-IMPORT 0.3</b> · <span id="base">đang kết nối…</span>
+<b>VP-IMPORT 0.4</b> · <span id="base">đang kết nối…</span>
 <textarea id="pkg" placeholder="Dán gói JSON (xem sổ tay mục VP-IMPORT)"></textarea>
 <button id="dry">1. Kiểm (không ghi)</button><button id="run" disabled>2. Ghi</button>
 <button id="bk" disabled>Tải sao lưu lần ghi</button><button id="undo" disabled>Khôi phục lần ghi gần nhất</button>
@@ -23,7 +23,7 @@ const T={von:'Giá vốn Kế toán', gia:'Giá theo SKU + kênh', master:'Maste
 const F={sku:'SKU', khoa:'Khóa SKU | Kênh', kenh:'Kênh',
   von:'Giá vốn có VAT (₫)', vatVao:'VAT đầu vào (%)', khauTru:'VAT đầu vào được khấu trừ', ngay:'Ngày áp dụng', ttVon:'Trạng thái giá vốn', ghiChu:'Người cấp | ghi chú',
   nhom:'Nhóm giao/lắp', vatRa:'VAT đầu ra riêng SKU (%)',
-  giaUp:'Giá up làm tròn nghìn (₫)', ktts:'Kiểm tra tham số', ttGia:'Trạng thái giá',
+  giaUp:'Giá up làm tròn nghìn (₫)', ktts:'Kiểm tra LN gộp', ttGia:'Trạng thái giá',
   duyet:'Giá đã duyệt (₫)', ttDuyet:'Trạng thái duyệt giá', ngayDuyet:'Ngày duyệt', nguoiDuyet:'Người duyệt'};
 const TT_GIA_OK=['PASS','ĐẠT LN gộp – LN ròng chờ tham số kênh'];
 
@@ -144,7 +144,7 @@ async function duyetGia(P){ // sau khi ghi đầu vào: chờ công thức, ki�
   for(const i of ds){ const ma='DUYỆT '+i.sku+' | '+i.kenh; const {r,err}=pick(t,F.khoa,i.sku+' | '+i.kenh,i.record_id); if(err||!r){log('LỖI: '+ma+': '+(err||'chưa có dòng'),'err');continue}
     let rec, g=null, kt='', tt='', t0=Date.now();
     while(Date.now()-t0<30000){ rec=await t.tb.getRecordById(r.recordId); kt=readVal(m.ktts,rec.fields[m.ktts.id]); tt=readVal(m.tt,rec.fields[m.tt.id]); g=num(m.giaUp,rec.fields[m.giaUp.id]); if(kt==='Đủ'&&g) break; await sleep(1000) }
-    if(kt!=='Đủ'){ log(`LỖI: ${ma}: Kiểm tra tham số = "${kt}" – không duyệt`,'err'); continue }
+    if(kt!=='Đủ'){ log(`LỖI: ${ma}: Kiểm tra LN gộp = "${kt}" – không duyệt`,'err'); continue }
     if(!TT_GIA_OK.includes(tt)){ log(`LỖI: ${ma}: Trạng thái giá = "${tt}" – không duyệt`,'err'); continue }
     if(!g){ log(`LỖI: ${ma}: công thức chưa trả số`,'err'); continue }
     if(i.gia_ky_vong&&i.gia_ky_vong!==g){ log(`LỖI: ${ma}: giá công thức ${g} ≠ kỳ vọng ${i.gia_ky_vong} – không duyệt`,'err'); continue }
