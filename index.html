@@ -8,7 +8,7 @@ button{margin:4px 4px 4px 0;padding:4px 10px}button:disabled{opacity:.45}
 pre{white-space:pre-wrap;background:#f5f6f7;padding:6px;max-height:420px;overflow:auto;font-size:12px}
 .ok{color:#1a7f37}.err{color:#c62828}
 </style></head><body>
-<b>VP-IMPORT 0.8</b> · <span id="base">đang kết nối…</span>
+<b>VP-IMPORT 0.9</b> · <span id="base">đang kết nối…</span>
 <textarea id="pkg" placeholder="Dán gói JSON (xem sổ tay mục VP-IMPORT)"></textarea>
 <button id="dry">1. Kiểm (không ghi)</button><button id="run" disabled>2. Ghi</button>
 <button id="bk" disabled>Tải sao lưu lần ghi</button><button id="undo" disabled>Khôi phục lần ghi gần nhất</button>
@@ -148,6 +148,8 @@ async function ghi(k){
 async function duyetGia(P){ // sau khi ghi đầu vào: chờ công thức, kiểm trạng thái, ghi giá duyệt từ công thức
   const ds=(P.gia||[]).filter(i=>i.duyet); if(!ds.length) return; delete cache[T.gia]; let t=await tbl(T.gia); if(!t) return;
   const m={giaUp:need(t,F.giaUp),ktts:need(t,F.ktts),tt:need(t,F.ttGia),von:need(t,F.vonGia),nhom:need(t,F.nhom),vatRa:need(t,F.vatRa)};
+  // dữ liệu SDK chỉ được làm mới cho bảng đang mở trên màn hình → chuyển sang bảng giá trước khi đọc công thức
+  try{ await bitable.ui.switchToTable(t.id); await sleep(1500) }catch(e){ log('Không chuyển được sang bảng "'+T.gia+'" – mở bảng đó rồi chạy lại phần duyệt','err'); return }
   const vonMoi=new Map((P.von||[]).filter(v=>typeof v.von==='number').map(v=>[v.sku,v.von]));
   for(const i of ds){ const ma='DUYỆT '+i.sku+' | '+i.kenh; const {r,err}=pick(t,F.khoa,i.sku+' | '+i.kenh,i.record_id); if(err||!r){log('LỖI: '+ma+': '+(err||'chưa có dòng'),'err');continue}
     // công thức phải phản ánh đầu vào vừa ghi: vốn trên dòng giá = vốn mới (nếu gói có vốn), nhóm/VAT ra = gói; rồi 2 lần đọc liền nhau giống hệt
