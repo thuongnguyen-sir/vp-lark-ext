@@ -8,7 +8,7 @@ button{margin:4px 4px 4px 0;padding:4px 10px}button:disabled{opacity:.45}
 pre{white-space:pre-wrap;background:#f5f6f7;padding:6px;max-height:420px;overflow:auto;font-size:12px}
 .ok{color:#1a7f37}.err{color:#c62828}
 </style></head><body>
-<b>VP-IMPORT 0.6</b> · <span id="base">đang kết nối…</span>
+<b>VP-IMPORT 0.7</b> · <span id="base">đang kết nối…</span>
 <textarea id="pkg" placeholder="Dán gói JSON (xem sổ tay mục VP-IMPORT)"></textarea>
 <button id="dry">1. Kiểm (không ghi)</button><button id="run" disabled>2. Ghi</button>
 <button id="bk" disabled>Tải sao lưu lần ghi</button><button id="undo" disabled>Khôi phục lần ghi gần nhất</button>
@@ -23,7 +23,7 @@ const T={von:'Giá vốn Kế toán', gia:'Giá theo SKU + kênh', master:'Maste
 const F={sku:'SKU', khoa:'Khóa SKU | Kênh', kenh:'Kênh',
   von:'Giá vốn có VAT (₫)', vatVao:'VAT đầu vào (%)', khauTru:'VAT đầu vào được khấu trừ', ngay:'Ngày áp dụng', ttVon:'Trạng thái giá vốn', ghiChu:'Người cấp | ghi chú',
   nhom:'Nhóm giao/lắp', vatRa:'VAT đầu ra riêng SKU (%)',
-  giaUp:'Giá up làm tròn nghìn (₫)', ktts:'Kiểm tra LN gộp', ttGia:'Trạng thái giá',
+  giaUp:'Giá up làm tròn nghìn (₫)', vonGia:'Giá nhập có VAT (₫)', ktts:'Kiểm tra LN gộp', ttGia:'Trạng thái giá',
   duyet:'Giá đã duyệt (₫)', ttDuyet:'Trạng thái duyệt giá', ngayDuyet:'Ngày duyệt', nguoiDuyet:'Người duyệt'};
 const TT_GIA_OK=['PASS','ĐẠT LN gộp – LN ròng chờ tham số kênh'];
 
@@ -147,10 +147,17 @@ async function ghi(k){
 }
 async function duyetGia(P){ // sau khi ghi đầu vào: chờ công thức, kiểm trạng thái, ghi giá duyệt từ công thức
   const ds=(P.gia||[]).filter(i=>i.duyet); if(!ds.length) return; delete cache[T.gia]; let t=await tbl(T.gia); if(!t) return;
-  const m={giaUp:need(t,F.giaUp),ktts:need(t,F.ktts),tt:need(t,F.ttGia)};
+  const m={giaUp:need(t,F.giaUp),ktts:need(t,F.ktts),tt:need(t,F.ttGia),von:need(t,F.vonGia),nhom:need(t,F.nhom),vatRa:need(t,F.vatRa)};
+  const vonMoi=new Map((P.von||[]).filter(v=>typeof v.von==='number').map(v=>[v.sku,v.von]));
   for(const i of ds){ const ma='DUYỆT '+i.sku+' | '+i.kenh; const {r,err}=pick(t,F.khoa,i.sku+' | '+i.kenh,i.record_id); if(err||!r){log('LỖI: '+ma+': '+(err||'chưa có dòng'),'err');continue}
-    let rec, g=null, kt='', tt='', t0=Date.now();
-    while(Date.now()-t0<30000){ rec=await t.tb.getRecordById(r.recordId); kt=readVal(m.ktts,rec.fields[m.ktts.id]); tt=readVal(m.tt,rec.fields[m.tt.id]); g=num(m.giaUp,rec.fields[m.giaUp.id]); if(kt==='Đủ'&&g) break; await sleep(1000) }
+    // công thức phải phản ánh đầu vào vừa ghi: vốn trên dòng giá = vốn mới (nếu gói có vốn), nhóm/VAT ra = gói; rồi 2 lần đọc liền nhau giống hệt
+    let rec, g=null, kt='', tt='', t0=Date.now(), truoc=null, dauVao=false;
+    while(Date.now()-t0<45000){ rec=await t.tb.getRecordById(r.recordId);
+      kt=readVal(m.ktts,rec.fields[m.ktts.id]); tt=readVal(m.tt,rec.fields[m.tt.id]); g=num(m.giaUp,rec.fields[m.giaUp.id]);
+      const vg=num(m.von,rec.fields[m.von.id]);
+      dauVao=(!vonMoi.has(i.sku)||vg===vonMoi.get(i.sku)) && (i.nhom===undefined||readVal(m.nhom,rec.fields[m.nhom.id])===i.nhom) && (i.vat_ra===undefined||num(m.vatRa,rec.fields[m.vatRa.id])===i.vat_ra);
+      const dau=[kt,tt,g,vg].join('|'); if(dauVao&&kt==='Đủ'&&g&&dau===truoc) break; truoc=dauVao?dau:null; await sleep(1000) }
+    if(!dauVao){ log(`LỖI: ${ma}: công thức chưa nhận đầu vào mới sau 45 giây – không duyệt`,'err'); continue }
     if(kt!=='Đủ'){ log(`LỖI: ${ma}: Kiểm tra LN gộp = "${kt}" – không duyệt`,'err'); continue }
     if(!TT_GIA_OK.includes(tt)){ log(`LỖI: ${ma}: Trạng thái giá = "${tt}" – không duyệt`,'err'); continue }
     if(!g){ log(`LỖI: ${ma}: công thức chưa trả số – giá trị SDK: ${raw(rec.fields[m.giaUp.id])}`,'err'); continue }
